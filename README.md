@@ -89,7 +89,7 @@ source install/setup.bash
 ### Avvio del controller
 ```bash
 ros2 run turtle_controller turtle_controller_node
-
+```
 Requisiti per il funzionamento
 
     un nodo LaserScan attivo (TurtleBot3 reale o simulazione)
