@@ -67,3 +67,53 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+
+
+
+
+# ============================
+# ROS2 / COLCON
+# ============================
+build/
+install/
+log/
+.colcon/
+.colcon_meta/
+
+# ============================
+# CMake
+# ============================
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+
+# ============================
+# VS Code
+# ============================
+.vscode/
+*.code-workspace
+
+# ============================
+# Python cache (per script)
+# ============================
+__pycache__/
+*.pyc
+
+# ============================
+# Editor swap files
+# ============================
+*.swp
+*.swo
+
+# ============================
+# Backup files
+# ============================
+*~
+*.bak
+
+# ============================
+# OS junk files
+# ============================
+.DS_Store
+Thumbs.db
