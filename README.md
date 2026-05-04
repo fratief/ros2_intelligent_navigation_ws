@@ -53,6 +53,7 @@ Genera i comandi di movimento (Twist) combinando:
 
 ##  Struttura del progetto
 
+<pre>
 ros2_intelligent_navigation_ws/
 │
 ├── src/
@@ -70,7 +71,7 @@ ros2_intelligent_navigation_ws/
 │
 ├── .gitignore
 └── README.md
-
+</pre>
 ---
 
 ## Installazione
@@ -81,24 +82,27 @@ Assicurati di avere ROS2 (Humble o successivo) installato.
 cd ros2_intelligent_navigation_ws
 colcon build
 source install/setup.bash
+```
 
 ---
 
 ## Esecuzione
 
 ### Avvio del controller
+
 ```bash
 ros2 run turtle_controller turtle_controller_node
 ```
-Requisiti per il funzionamento
 
-    un nodo LaserScan attivo (TurtleBot3 reale o simulazione)
+Requisiti per il funzionamento:
 
-    un topic /scan pubblicato regolarmente
+  - un nodo LaserScan attivo (TurtleBot3 reale o simulazione)
 
-    parametri di velocità configurati nel controller
+  - un topic /scan pubblicato regolarmente
 
-    ROS2 Humble (o successivo) correttamente installato
+  - parametri di velocità configurati nel controller
+
+  - ROS2 Humble (o successivo) correttamente installato
 
 ## Comportamento atteso
 

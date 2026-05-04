@@ -9,13 +9,14 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(nav_msgs REQUIRED)
 find_package(turtlesim REQUIRED)
 add_executable(turtle_controller_node
   src/turtle_controller.cpp
   src/FSM.cpp
   src/risk_model.cpp
 )
-ament_target_dependencies(turtle_controller_node rclcpp sensor_msgs turtlesim)
+ament_target_dependencies(turtle_controller_node rclcpp sensor_msgs turtlesim nav_msgs)
 target_include_directories(turtle_controller_node PUBLIC
   include
 )

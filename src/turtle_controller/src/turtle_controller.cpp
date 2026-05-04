@@ -9,6 +9,9 @@
 #include "sensor_msgs/msg/laser_scan.hpp"
 #include "turtle_controller/FSM.hpp"
 #include "turtle_controller/risk_model.hpp"
+#include "nav_msgs/msg/odometry.hpp"
+
+
 
 constexpr double X_SPEED = 0.30;
 constexpr double X_SPEED_TRANSITION = 0.22;
@@ -17,6 +20,58 @@ constexpr double X_SPEED_ESCAPE = 0.16;
 constexpr double MAX_ANGULAR = 2;
 using namespace std::chrono_literals;
 using std::placeholders::_1;
+
+
+
+/*
+
+
+francesco@francesco-HP-Laptop-15s-fq5xxx:~/Desktop/ros2_intelligent_navigation_ws$ ros2 interface show nav_msgs/msg/Odometry
+# This represents an estimate of a position and velocity in free space.
+# The pose in this message should be specified in the coordinate frame given by header.frame_id
+# The twist in this message should be specified in the coordinate frame given by the child_frame_id
+
+# Includes the frame id of the pose parent.
+std_msgs/Header header
+	builtin_interfaces/Time stamp
+		int32 sec
+		uint32 nanosec
+	string frame_id
+
+# Frame id the pose points to. The twist is in this coordinate frame.
+string child_frame_id
+
+# Estimated pose that is typically relative to a fixed world frame.
+geometry_msgs/PoseWithCovariance pose
+	Pose pose
+		Point position
+			float64 x
+			float64 y
+			float64 z
+		Quaternion orientation
+			float64 x 0
+			float64 y 0
+			float64 z 0
+			float64 w 1
+	float64[36] covariance
+
+# Estimated linear and angular velocity relative to child_frame_id.
+geometry_msgs/TwistWithCovariance twist
+	Twist twist
+		Vector3  linear
+			float64 x
+			float64 y
+			float64 z
+		Vector3  angular
+			float64 x
+			float64 y
+			float64 z
+	float64[36] covariance
+
+
+
+
+*/
 
 /*
 francescotief@francesco-tief:~$ ros2 interface show sensor_msgs/msg/LaserScan
@@ -57,6 +112,40 @@ float32[] intensities        # intensity data [device-specific units].  If your
 francescotief@francesco-tief:~$
 */
 
+
+
+class PIController {
+public:
+    PIController(double kp, double ki)
+        : kp_(kp), ki_(ki), integral_(0.0), last_time_(-1.0) {}
+
+    double update(double reference, double measurement, double now)
+    {
+        double error = reference - measurement;
+
+        // dt reale
+        double dt = 0.02; // fallback
+        if (last_time_ > 0.0) {
+            dt = now - last_time_;
+            if (dt < 0.0 || dt > 0.2)
+                dt = 0.02;
+        }
+        last_time_ = now;
+
+        // integratore
+        integral_ += error * dt;
+
+        // uscita PI
+        return kp_ * error + ki_ * integral_;
+    }
+
+private:
+    double kp_, ki_;
+    double integral_;
+    double last_time_;
+};
+
+
 class TurtleController : public rclcpp ::Node
 {
 public:
@@ -79,6 +168,13 @@ public:
         explore_time_direction_change_ = this->now();
         explore_turn_ = dist(gen);
         subscription_ = this->create_subscription<sensor_msgs::msg::LaserScan>("/scan", 10, std::bind(&TurtleController::pose_callback, this, _1));
+        subscription_odom_ = this->create_subscription<nav_msgs::msg::Odometry>(
+        "/odom", 10,
+        [this](const nav_msgs::msg::Odometry::SharedPtr msg) {
+            current_linear_velocity_ = msg->twist.twist.linear.x;
+            current_angular_velocity_ = msg->twist.twist.angular.z;
+        });
+
     }
 
 private:
@@ -133,6 +229,7 @@ private:
     // INIZIO PORTING HANDLE IN NUOVA CLASSE
     void handle_escape(geometry_msgs::msg::Twist &message)
     {
+        auto now = this->now().seconds();
         double dir = chooseEscapeDirection();        // lato suggerito
         double repulsion = right_risk_ - left_risk_; // forza laterale
 
@@ -140,14 +237,23 @@ private:
             0.7 * dir +      // direzione scelta
             0.3 * repulsion; // intensità reale del rischio
 
+
+        
+        double v_ref = X_SPEED_ESCAPE * (1.0 - global_risk_);
+        double w_ref = turn * (1.0 - global_risk_);
+
+        message.linear.x  = pi_linear_.update(v_ref, current_linear_velocity_,now);
+        message.angular.z = pi_angular_.update(w_ref, current_angular_velocity_,now);
+        /*
         message.linear.x = X_SPEED_ESCAPE * (1.0 - global_risk_);
         message.angular.z = turn * escape_k_mult;
-
+        */
         previous_turn_ = turn;
     }
 
     void handle_transition(geometry_msgs::msg::Twist &message)
     {
+        auto now = this->now().seconds();
         double dir = chooseEscapeDirection();        // lato suggerito
         double repulsion = right_risk_ - left_risk_; // forza reale
         double explore_bias = dist(gen);             // componente esplorativa
@@ -164,19 +270,25 @@ private:
             0.35 * previous_turn_ +              // memoria forte
             transition_k_random_ * explore_bias; // esplorazione leggera
 
+
+        double v_ref = X_SPEED_TRANSITION * (1.0 - global_risk_);
+        double w_ref = turn * (1.0 - global_risk_);
+
+        message.linear.x  = pi_linear_.update(v_ref, current_linear_velocity_,now);
+        message.angular.z = pi_angular_.update(w_ref, current_angular_velocity_,now);
+        /*
         message.linear.x = X_SPEED_TRANSITION * (1.0 - global_risk_); // più veloce ---- più rischio
         message.angular.z = turn * (1.0 - global_risk_);
-
+        */
         previous_turn_ = turn;
     }
 
     void handle_explore(geometry_msgs::msg::Twist &message)
     {
-        auto now = this->now();
-
-        if ((now - explore_time_direction_change_).seconds() > min_duration_explore_)
+        auto now = this->now().seconds();
+        if ((this->now() - explore_time_direction_change_).seconds() > min_duration_explore_)
         {
-            explore_time_direction_change_ = now;
+            explore_time_direction_change_ = this->now();
             explore_turn_ = dist(gen) * 0.6;
         }
 
@@ -184,9 +296,18 @@ private:
             explore_k_weight_ * explore_turn_ +
             0.2 * previous_turn_;
 
+        double v_ref = X_SPEED * (1.0 - global_risk_);
+        double w_ref = turn * (1.0 - global_risk_);
+
+        message.linear.x  = pi_linear_.update(v_ref, current_linear_velocity_,now);
+        message.angular.z = pi_angular_.update(w_ref, current_angular_velocity_,now);
+
+        
+            /*    
+
         message.linear.x = X_SPEED * (1.0 - global_risk_); // più veloce --- più rischio;
         message.angular.z = turn * (1.0 - global_risk_);
-
+        */
         previous_turn_ = turn;
     }
 
@@ -222,15 +343,26 @@ private:
         return previous_turn_ >= 0 ? 0.5 : -0.5;
     }
 
+
+
+ 
+
+    double current_linear_velocity_ = 0.0;
+    double current_angular_velocity_ = 0.0;
+
     // declaration of the publisher and subscription as private members of the class TurtleController
     rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr publisher_;
     rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr subscription_;
+    rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr subscription_odom_;
     rclcpp::Time explore_time_direction_change_; // time when turtle changes direction while exploring
     State state_;
     sensor_msgs::msg::LaserScan::SharedPtr last_scan_;
     // dynamic memory for istance FSM and RiskModel
     std::unique_ptr<FSM> fsm_;
     std::unique_ptr<RiskModel> risk_model_;
+
+    PIController pi_linear_{10.0, 8.0};
+    PIController pi_angular_{10.0, 8.0};
 
     // utilty to generate randomic number
     std::random_device rd;
