@@ -114,37 +114,64 @@ francescotief@francesco-tief:~$
 
 
 
-class PIController {
+
+class VelocityControllerPI
+{
 public:
-    PIController(double kp, double ki)
-        : kp_(kp), ki_(ki), integral_(0.0), last_time_(-1.0) {}
+    VelocityControllerPI(double kp = 1.0,
+                         double ki = 0.3,
+                         double ts = 0.05)
+        : Kp_(kp), Ki_(ki), Ts_(ts)
+    {}
 
-    double update(double reference, double measurement, double now)
+    void setReference(double v_ref)
     {
-        double error = reference - measurement;
+        v_ref_ = v_ref;
+    }
 
-        // dt reale
-        double dt = 0.02; // fallback
-        if (last_time_ > 0.0) {
-            dt = now - last_time_;
-            if (dt < 0.0 || dt > 0.2)
-                dt = 0.02;
-        }
-        last_time_ = now;
+    void setMeasurement(double v_meas)
+    {
+        v_meas_ = v_meas;
+    }
 
-        // integratore
-        integral_ += error * dt;
+    void update()
+    {
+        double error = v_ref_ - v_meas_;
 
-        // uscita PI
-        return kp_ * error + ki_ * integral_;
+        // integratore discreto
+        integral_ += error * Ts_;
+
+        // anti-windup semplice
+        integral_ = std::clamp(integral_, -2.0, 2.0);
+
+        // PI
+        u_ = Kp_ * error + Ki_ * integral_;
+    }
+
+    double getCommand() const
+    {
+        return u_;
+    }
+
+    void reset()
+    {
+        integral_ = 0.0;
+        u_ = 0.0;
+        v_ref_ = 0.0;
+        v_meas_ = 0.0;
     }
 
 private:
-    double kp_, ki_;
-    double integral_;
-    double last_time_;
-};
+    double Kp_;
+    double Ki_;
+    double Ts_;
 
+    double v_ref_ = 0.0;
+    double v_meas_ = 0.0;
+    double u_ = 0.0;
+
+    double integral_ = 0.0;
+};
 
 class TurtleController : public rclcpp ::Node
 {
@@ -167,13 +194,11 @@ public:
         state_ = fsm_->getCurrentState();
         explore_time_direction_change_ = this->now();
         explore_turn_ = dist(gen);
+        pi_linear_ = VelocityControllerPI(1.2, 0.6, 0.05);
+        pi_angular_ = VelocityControllerPI(1.0, 0.3, 0.05);
         subscription_ = this->create_subscription<sensor_msgs::msg::LaserScan>("/scan", 10, std::bind(&TurtleController::pose_callback, this, _1));
         subscription_odom_ = this->create_subscription<nav_msgs::msg::Odometry>(
-        "/odom", 10,
-        [this](const nav_msgs::msg::Odometry::SharedPtr msg) {
-            current_linear_velocity_ = msg->twist.twist.linear.x;
-            current_angular_velocity_ = msg->twist.twist.angular.z;
-        });
+        "/odom", 10, std::bind(&TurtleController::odom_callback, this, _1));
 
     }
 
@@ -197,7 +222,6 @@ private:
         front_wide_risk_ = risk_model_->getFrontWideRisk();
         left_risk_ = risk_model_->getLeftRisk();
         right_risk_ = risk_model_->getRightRisk();
-        ;
         back_risk_ = risk_model_->getBackRisk();
         state_ = fsm_->update(risk_model_->getGlobalRisk());
 
@@ -205,8 +229,8 @@ private:
             this->get_logger(),
             *this->get_clock(),
             300,
-            "State: %d, right_risk: %.2f, left_risk:%.2f, front_risk:%.2f,  front_wide_risk:%.2f,  back_risk:%.2f, global_risk:%.2f",
-            static_cast<int>(state_), right_risk_, left_risk_, front_risk_, front_wide_risk_, back_risk_, global_risk_);
+            "State: %d, right_risk: %.2f, left_risk:%.2f, front_risk:%.2f,  front_wide_risk:%.2f,  back_risk:%.2f, global_risk:%.2f, v=%.2f w=%.2f",
+            static_cast<int>(state_), right_risk_, left_risk_, front_risk_, front_wide_risk_, back_risk_, global_risk_,current_linear_velocity_, current_angular_velocity_);
 
         switch (state_)
         {
@@ -229,7 +253,6 @@ private:
     // INIZIO PORTING HANDLE IN NUOVA CLASSE
     void handle_escape(geometry_msgs::msg::Twist &message)
     {
-        auto now = this->now().seconds();
         double dir = chooseEscapeDirection();        // lato suggerito
         double repulsion = right_risk_ - left_risk_; // forza laterale
 
@@ -237,13 +260,33 @@ private:
             0.7 * dir +      // direzione scelta
             0.3 * repulsion; // intensità reale del rischio
 
-
-        
         double v_ref = X_SPEED_ESCAPE * (1.0 - global_risk_);
         double w_ref = turn * (1.0 - global_risk_);
 
-        message.linear.x  = pi_linear_.update(v_ref, current_linear_velocity_,now);
-        message.angular.z = pi_angular_.update(w_ref, current_angular_velocity_,now);
+        
+        pi_linear_.setReference(v_ref);
+        pi_angular_.setReference(w_ref);
+
+        // 2. measurement (da odom)
+        pi_linear_.setMeasurement(current_linear_velocity_);
+        pi_angular_.setMeasurement(current_angular_velocity_);
+        pi_angular_.update();
+        pi_linear_.update();
+        double u_linear = pi_linear_.getCommand();
+        double w_angular = pi_angular_.getCommand();
+        v_ref_smooth_ = 0.2 * v_ref_smooth_ + 0.8 * u_linear;
+        w_ref_smooth_ = 0.25 * w_ref_smooth_ + 0.75 * w_angular;
+        message.linear.x = v_ref_smooth_;
+        message.angular.z = w_ref_smooth_;
+
+        //message.linear.x  = pi_linear_.update(v_ref_smooth_, current_linear_velocity_,now);
+        
+     
+
+
+        //message.linear.x = std::clamp(message.linear.x, -X_SPEED_ESCAPE, X_SPEED_ESCAPE);
+        //message.angular.z = std::clamp(message.angular.z, -MAX_ANGULAR, MAX_ANGULAR);
+
         /*
         message.linear.x = X_SPEED_ESCAPE * (1.0 - global_risk_);
         message.angular.z = turn * escape_k_mult;
@@ -253,7 +296,6 @@ private:
 
     void handle_transition(geometry_msgs::msg::Twist &message)
     {
-        auto now = this->now().seconds();
         double dir = chooseEscapeDirection();        // lato suggerito
         double repulsion = right_risk_ - left_risk_; // forza reale
         double explore_bias = dist(gen);             // componente esplorativa
@@ -274,8 +316,23 @@ private:
         double v_ref = X_SPEED_TRANSITION * (1.0 - global_risk_);
         double w_ref = turn * (1.0 - global_risk_);
 
-        message.linear.x  = pi_linear_.update(v_ref, current_linear_velocity_,now);
-        message.angular.z = pi_angular_.update(w_ref, current_angular_velocity_,now);
+        // filtro passa-basso sul riferimento
+   
+        pi_linear_.setReference(v_ref);
+        pi_angular_.setReference(w_ref);
+
+        // 2. measurement (da odom)
+        pi_linear_.setMeasurement(current_linear_velocity_);
+        pi_angular_.setMeasurement(current_angular_velocity_);
+        pi_angular_.update();
+        pi_linear_.update();
+        double u_linear = pi_linear_.getCommand();
+        double w_angular = pi_angular_.getCommand();
+        v_ref_smooth_ = 0.2 * v_ref_smooth_ + 0.8 * u_linear;
+        w_ref_smooth_ = 0.25 * w_ref_smooth_ + 0.75 * w_angular;
+        message.linear.x = v_ref_smooth_;
+        message.angular.z = w_ref_smooth_;
+
         /*
         message.linear.x = X_SPEED_TRANSITION * (1.0 - global_risk_); // più veloce ---- più rischio
         message.angular.z = turn * (1.0 - global_risk_);
@@ -285,7 +342,6 @@ private:
 
     void handle_explore(geometry_msgs::msg::Twist &message)
     {
-        auto now = this->now().seconds();
         if ((this->now() - explore_time_direction_change_).seconds() > min_duration_explore_)
         {
             explore_time_direction_change_ = this->now();
@@ -299,10 +355,26 @@ private:
         double v_ref = X_SPEED * (1.0 - global_risk_);
         double w_ref = turn * (1.0 - global_risk_);
 
-        message.linear.x  = pi_linear_.update(v_ref, current_linear_velocity_,now);
-        message.angular.z = pi_angular_.update(w_ref, current_angular_velocity_,now);
+        // filtro passa-basso sul riferimento
+   
+        pi_linear_.setReference(v_ref);
+        pi_angular_.setReference(w_ref);
 
-        
+        // 2. measurement (da odom)
+        pi_linear_.setMeasurement(current_linear_velocity_);
+        pi_angular_.setMeasurement(current_angular_velocity_);
+        pi_angular_.update();
+        pi_linear_.update();
+        double u_linear = pi_linear_.getCommand();
+        double w_angular = pi_angular_.getCommand();
+        v_ref_smooth_ = 0.2 * v_ref_smooth_ + 0.8 * u_linear;
+        w_ref_smooth_ = 0.25 * w_ref_smooth_ + 0.75 * w_angular;
+        message.linear.x = v_ref_smooth_;
+        message.angular.z = w_ref_smooth_;
+
+        //message.linear.x = std::clamp(message.linear.x, -X_SPEED_ESCAPE, X_SPEED_ESCAPE);
+        //message.angular.z = std::clamp(message.angular.z, -MAX_ANGULAR, MAX_ANGULAR);
+
             /*    
 
         message.linear.x = X_SPEED * (1.0 - global_risk_); // più veloce --- più rischio;
@@ -341,8 +413,13 @@ private:
 
         // 4. Se sono uguali -- mantieni la direzione precedente
         return previous_turn_ >= 0 ? 0.5 : -0.5;
-    }
+    }   
 
+    void odom_callback(const nav_msgs::msg::Odometry::SharedPtr msg)
+    {
+        current_linear_velocity_ = msg->twist.twist.linear.x;
+        current_angular_velocity_ = msg->twist.twist.angular.z;
+    }
 
 
  
@@ -361,8 +438,11 @@ private:
     std::unique_ptr<FSM> fsm_;
     std::unique_ptr<RiskModel> risk_model_;
 
-    PIController pi_linear_{10.0, 8.0};
-    PIController pi_angular_{10.0, 8.0};
+    VelocityControllerPI pi_linear_;
+    VelocityControllerPI pi_angular_;
+
+    double v_ref_smooth_ = 0.0;
+    double w_ref_smooth_ = 0.0;
 
     // utilty to generate randomic number
     std::random_device rd;
