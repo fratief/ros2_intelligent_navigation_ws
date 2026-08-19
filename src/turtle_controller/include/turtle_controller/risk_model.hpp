@@ -63,7 +63,7 @@ private:
     double normalizeAngle(double a) const;
 
 public:
-    explicit RiskModel(double alpha = 0.75);
+    RiskModel(double alpha = 0.75);
     ~RiskModel();
 
     // Aggiorna lo scan

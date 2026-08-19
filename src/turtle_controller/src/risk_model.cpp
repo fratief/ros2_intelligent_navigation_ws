@@ -37,14 +37,13 @@ void RiskModel::update()
     );
 
     double weighted_risk =
-        0.50 * front_risk_        // ostacoli diretti davanti
-        + 0.25 * front_wide_risk_ // corridoi, muri laterali, ambienti stretti
-        + 0.1 * left_risk_        // per scegliere direzione di fuga
-        + 0.1 * right_risk_       // idem
-        + 0.05 * back_risk_;      // evita di girarsi verso un muro
+        0.60 * front_risk_        // ostacoli diretti davanti
+        + 0.30 * front_wide_risk_ // corridoi, muri laterali, ambienti stretti
+        + 0.035 * left_risk_        // per scegliere direzione di fuga
+        + 0.035 * right_risk_       // idem
+        + 0.03 * back_risk_;      // evita di girarsi verso un muro
 
-    double alpha = 0.75; // più alto = più stabile
-
+    /*
     if (!isInitialize)
     {
         global_risk_ = weighted_risk;
@@ -52,8 +51,26 @@ void RiskModel::update()
     }
     else
     {
-        global_risk_ = alpha * global_risk_ + (1 - alpha) * weighted_risk;
+        // Usa alpha_ (membro di classe)
+        global_risk_ = alpha_ * global_risk_ + (1.0 - alpha_) * weighted_risk;
     }
+
+    */
+
+        // 1. Dominanza del settore critico bilanciata
+    double max_sector = std::max({front_risk_, front_wide_risk_, left_risk_, right_risk_, back_risk_});
+    weighted_risk = std::max(weighted_risk, 0.70 * max_sector);
+
+    // 2. Alpha asimmetrico (55% sensibilità in salita / 20% in discesa)
+    double alpha = (weighted_risk > global_risk_) ? 0.45 : 0.80;
+
+    if (!isInitialize) {
+        global_risk_ = weighted_risk;
+        isInitialize = true;
+    } else {
+        global_risk_ = alpha * global_risk_ + (1.0 - alpha) * weighted_risk;
+    }
+
 }
 
 double RiskModel::getGlobalRisk() const
@@ -115,9 +132,10 @@ double RiskModel::getRiskBySector(double start_angle, double end_angle) const
     for (int i = 0; i < size; ++i)
     {
         double angle = angle_min + i * angle_inc;
+        double norm_angle = normalizeAngle(angle); // <- AGGIUNTA
         bool in_sector =
-            (!wrap && angle >= start_angle && angle <= end_angle) ||
-            (wrap && (angle >= start_angle || angle <= end_angle));
+            (!wrap && norm_angle >= start_angle && norm_angle <= end_angle) ||
+            (wrap && (norm_angle >= start_angle || norm_angle <= end_angle));
 
         if (!in_sector)
             continue;
@@ -161,9 +179,7 @@ double RiskModel::getRiskBySector(double start_angle, double end_angle) const
     double risk_max = (safe - min_dist) / (safe - min_d);
 
     double density = (double)count_close / count_total;
-
-    double risk_sector =
-        0.6 * risk_mean + 0.3 * risk_max + 0.1 * density;
+    double risk_sector = 0.70 * risk_max + 0.25 * density + 0.05 * risk_mean;
 
     return std::clamp(risk_sector, 0.0, 1.0);
 };

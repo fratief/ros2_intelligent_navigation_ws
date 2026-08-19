@@ -3,7 +3,6 @@
 #include <random>
 #include "rclcpp/rclcpp.hpp"
 #include "geometry_msgs/msg/twist.hpp"
-#include "turtlesim/msg/pose.hpp"
 #include <algorithm>
 // #include "turtlesim/msg/pose.hpp"
 #include "sensor_msgs/msg/laser_scan.hpp"
@@ -101,7 +100,6 @@ private:
         front_wide_risk_ = risk_model_->getFrontWideRisk();
         left_risk_ = risk_model_->getLeftRisk();
         right_risk_ = risk_model_->getRightRisk();
-        ;
         back_risk_ = risk_model_->getBackRisk();
         state_ = fsm_->update(risk_model_->getGlobalRisk());
 

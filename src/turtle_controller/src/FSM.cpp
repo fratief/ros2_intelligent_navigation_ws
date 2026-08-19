@@ -63,11 +63,10 @@ State FSM::computeState(double risk)
         return State::TRANSITION;
 
     case State::ESCAPE:
+        if (risk < 0.20)
+            return State::EXPLORE; // Inserisci prima la condizione più restrittiva
         if (risk < 0.45)
             return State::TRANSITION;
-
-        if (risk < 0.20)
-            return State::EXPLORE;
 
         return State::ESCAPE;
     }
