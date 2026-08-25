@@ -14,6 +14,7 @@ add_executable(turtle_controller_node
   src/turtle_controller.cpp
   src/FSM.cpp
   src/risk_model.cpp
+  src/ReactivePlanner.cpp
 )
 ament_target_dependencies(turtle_controller_node rclcpp sensor_msgs turtlesim)
 target_include_directories(turtle_controller_node PUBLIC

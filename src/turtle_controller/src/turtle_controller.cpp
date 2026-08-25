@@ -8,12 +8,9 @@
 #include "sensor_msgs/msg/laser_scan.hpp"
 #include "turtle_controller/FSM.hpp"
 #include "turtle_controller/risk_model.hpp"
+#include "turtle_controller/ReactivePlanner.hpp"
 
-constexpr double X_SPEED = 0.30;
-constexpr double X_SPEED_TRANSITION = 0.22;
-constexpr double X_SPEED_ESCAPE = 0.16;
 
-constexpr double MAX_ANGULAR = 2;
 using namespace std::chrono_literals;
 using std::placeholders::_1;
 
@@ -63,21 +60,28 @@ public:
     TurtleController() : Node("turtle_controller"), gen(rd()), dist(-1.0, 1.0)
     {
         // in the section of the constructor I create a publisher (on topic /turtle1/cmd_vel) and a subscription (on topic /turtle1/pose)
-        this->declare_parameter<double>("min_duration_explore", 1.5);
-        this->declare_parameter<double>("explore_k_weight", 0.8);
-        this->declare_parameter<double>("transition_k_random", 0.10);
-        this->declare_parameter<double>("escape_k_mult", 1.5);
-        min_duration_explore_ = this->get_parameter("min_duration_explore").as_double();
-        explore_k_weight_ = this->get_parameter("explore_k_weight").as_double();
-        escape_k_mult = this->get_parameter("escape_k_mult").as_double();
-        transition_k_random_ = this->get_parameter("transition_k_random").as_double();
+        // this->declare_parameter<double>("min_duration_explore", 1.5);
+        // this->declare_parameter<double>("explore_k_weight", 0.8);
+        // this->declare_parameter<double>("transition_k_random", 0.10);
+        // this->declare_parameter<double>("escape_k_mult", 1.5);
+        // min_duration_explore_ = this->get_parameter("min_duration_explore").as_double();
+        // explore_k_weight_ = this->get_parameter("explore_k_weight").as_double();
+        // escape_k_mult = this->get_parameter("escape_k_mult").as_double();
+        // transition_k_random_ = this->get_parameter("transition_k_random").as_double();
+
+
         fsm_ = std::make_unique<FSM>();
         risk_model_ = std::make_unique<RiskModel>();
+        reactive_planner_ = std::make_unique<ReactivePlanner>();
+
+
         publisher_ = this->create_publisher<geometry_msgs::msg::Twist>("/cmd_vel", 10);
-        state_ = fsm_->getCurrentState();
-        explore_time_direction_change_ = this->now();
-        explore_turn_ = dist(gen);
         subscription_ = this->create_subscription<sensor_msgs::msg::LaserScan>("/scan", 10, std::bind(&TurtleController::pose_callback, this, _1));
+        state_ = fsm_->getCurrentState();
+
+
+        // explore_time_direction_change_ = this->now();
+        // explore_turn_ = dist(gen);
     }
 
 private:
@@ -88,137 +92,162 @@ private:
         // here we create a message of type geometry_msgs::msg::Twist to control the turtle
         // auto message = geometry_msgs::msg::Twist();
 
-        last_scan_ = msg;
-        if (!last_scan_)
-            return;
+        // last_scan_ = msg;
+        // if (!last_scan_)
+        //     return;
 
-        auto message = geometry_msgs::msg::Twist();
-        risk_model_->updateScan(last_scan_);
+        // auto message = geometry_msgs::msg::Twist();
+        // risk_model_->updateScan(last_scan_);
+        // risk_model_->update();
+        // global_risk_ = risk_model_->getGlobalRisk();
+        // front_risk_ = risk_model_->getFrontRisk();
+        // front_wide_risk_ = risk_model_->getFrontWideRisk();
+        // left_risk_ = risk_model_->getLeftRisk();
+        // right_risk_ = risk_model_->getRightRisk();
+        // back_risk_ = risk_model_->getBackRisk();
+        if(!msg) return;
+        
+
+        risk_model_->updateScan(msg);
         risk_model_->update();
-        global_risk_ = risk_model_->getGlobalRisk();
-        front_risk_ = risk_model_->getFrontRisk();
-        front_wide_risk_ = risk_model_->getFrontWideRisk();
-        left_risk_ = risk_model_->getLeftRisk();
-        right_risk_ = risk_model_->getRightRisk();
-        back_risk_ = risk_model_->getBackRisk();
+
+
         state_ = fsm_->update(risk_model_->getGlobalRisk());
+
+        Risks current_risks {
+            risk_model_->getFrontRisk(),
+            risk_model_->getFrontWideRisk(),
+            risk_model_->getLeftRisk(),
+            risk_model_->getRightRisk(),
+            risk_model_->getBackRisk(),
+            risk_model_->getGlobalRisk()
+        };
+
+        reactive_planner_->updateRisks(current_risks);
+        double current_time = this->now().seconds();
+        ReactivePlannerOutput output;
+
 
         RCLCPP_INFO_THROTTLE(
             this->get_logger(),
             *this->get_clock(),
             300,
             "State: %d, right_risk: %.2f, left_risk:%.2f, front_risk:%.2f,  front_wide_risk:%.2f,  back_risk:%.2f, global_risk:%.2f",
-            static_cast<int>(state_), right_risk_, left_risk_, front_risk_, front_wide_risk_, back_risk_, global_risk_);
+            static_cast<int>(state_), current_risks.right_risk, current_risks.left_risk, current_risks.front_risk, current_risks.front_wide_risk, current_risks.back_risk, current_risks.global_risk);
 
         switch (state_)
         {
         case State::ESCAPE:
-            handle_escape(message);
+            output = reactive_planner_->handle_escape();
             break;
         case State::TRANSITION:
-            handle_transition(message);
+            output = reactive_planner_->handle_transition();
             break;
         default:
-            handle_explore(message);
+            output = reactive_planner_->handle_explore(current_time);
             break;
         }
 
-        // publish the message to control the turtle on the topic /turtle1/cmd_vel
+        // 4. Crea e pubblica il messaggio ROS 2
+        auto message = geometry_msgs::msg::Twist();
+        message.linear.x = output.linear_speed;
+        message.angular.z = output.angular_speed;
+
         publisher_->publish(message);
     }
 
 
-    // INIZIO PORTING HANDLE IN NUOVA CLASSE
-    void handle_escape(geometry_msgs::msg::Twist &message)
-    {
-        double dir = chooseEscapeDirection();        // lato suggerito
-        double repulsion = right_risk_ - left_risk_; // forza laterale
+    // // INIZIO PORTING HANDLE IN NUOVA CLASSE
+    // void handle_escape(geometry_msgs::msg::Twist &message)
+    // {
+    //     double dir = chooseEscapeDirection();        // lato suggerito
+    //     double repulsion = right_risk_ - left_risk_; // forza laterale
 
-        double turn =
-            0.7 * dir +      // direzione scelta
-            0.3 * repulsion; // intensità reale del rischio
+    //     double turn =
+    //         0.7 * dir +      // direzione scelta
+    //         0.3 * repulsion; // intensità reale del rischio
 
-        message.linear.x = X_SPEED_ESCAPE * (1.0 - global_risk_);
-        message.angular.z = turn * escape_k_mult;
+    //     message.linear.x = X_SPEED_ESCAPE * (1.0 - global_risk_);
+    //     message.angular.z = turn * escape_k_mult;
 
-        previous_turn_ = turn;
-    }
+    //     previous_turn_ = turn;
+    // }
 
-    void handle_transition(geometry_msgs::msg::Twist &message)
-    {
-        double dir = chooseEscapeDirection();        // lato suggerito
-        double repulsion = right_risk_ - left_risk_; // forza reale
-        double explore_bias = dist(gen);             // componente esplorativa
+    // void handle_transition(geometry_msgs::msg::Twist &message)
+    // {
+    //     double dir = chooseEscapeDirection();        // lato suggerito
+    //     double repulsion = right_risk_ - left_risk_; // forza reale
+    //     double explore_bias = dist(gen);             // componente esplorativa
 
-        // TRANSITION più rischiosa:
-        // - meno repulsione
-        // - più avanzamento
-        // - meno rotazione
-        // - memoria più forte
+    //     // TRANSITION più rischiosa:
+    //     // - meno repulsione
+    //     // - più avanzamento
+    //     // - meno rotazione
+    //     // - memoria più forte
 
-        double turn =
-            0.35 * dir +                         // direzione suggerita
-            0.20 * repulsion +                   // repulsione moderata
-            0.35 * previous_turn_ +              // memoria forte
-            transition_k_random_ * explore_bias; // esplorazione leggera
+    //     double turn =
+    //         0.35 * dir +                         // direzione suggerita
+    //         0.20 * repulsion +                   // repulsione moderata
+    //         0.35 * previous_turn_ +              // memoria forte
+    //         transition_k_random_ * explore_bias; // esplorazione leggera
 
-        message.linear.x = X_SPEED_TRANSITION * (1.0 - global_risk_); // più veloce ---- più rischio
-        message.angular.z = turn * (1.0 - global_risk_);
+    //     message.linear.x = X_SPEED_TRANSITION * (1.0 - global_risk_); // più veloce ---- più rischio
+    //     message.angular.z = turn * (1.0 - global_risk_);
 
-        previous_turn_ = turn;
-    }
+    //     previous_turn_ = turn;
+    // }
 
-    void handle_explore(geometry_msgs::msg::Twist &message)
-    {
-        auto now = this->now();
+    // void handle_explore(geometry_msgs::msg::Twist &message)
+    // {
+    //     auto now = this->now();
 
-        if ((now - explore_time_direction_change_).seconds() > min_duration_explore_)
-        {
-            explore_time_direction_change_ = now;
-            explore_turn_ = dist(gen) * 0.6;
-        }
+    //     if ((now - explore_time_direction_change_).seconds() > min_duration_explore_)
+    //     {
+    //         explore_time_direction_change_ = now;
+    //         explore_turn_ = dist(gen) * 0.6;
+    //     }
 
-        double turn =
-            explore_k_weight_ * explore_turn_ +
-            0.2 * previous_turn_;
+    //     double turn =
+    //         explore_k_weight_ * explore_turn_ +
+    //         0.2 * previous_turn_;
 
-        message.linear.x = X_SPEED * (1.0 - global_risk_); // più veloce --- più rischio;
-        message.angular.z = turn * (1.0 - global_risk_);
+    //     message.linear.x = X_SPEED * (1.0 - global_risk_); // più veloce --- più rischio;
+    //     message.angular.z = turn * (1.0 - global_risk_);
 
-        previous_turn_ = turn;
-    }
+    //     previous_turn_ = turn;
+    // }
 
-    // FINE PORTING HANDLE
+    // // FINE PORTING HANDLE
 
-    double chooseEscapeDirection()
-    {
+    // double chooseEscapeDirection()
+    // {
 
-        if (front_risk_ > 0.25)
-        {
-            if (left_risk_ < right_risk_)
-                return 1.0; // gira a sinistra
-            else
-                return -1.0; // gira a destra
-        }
+    //     if (front_risk_ > 0.25)
+    //     {
+    //         if (left_risk_ < right_risk_)
+    //             return 1.0; // gira a sinistra
+    //         else
+    //             return -1.0; // gira a destra
+    //     }
 
-        // 2. Se il fronte è moderato -- usa front_wide per capire la direzione
-        if (front_wide_risk_ > 0.20)
-        {
-            if (left_risk_ < right_risk_)
-                return 0.7; // sinistra, ma più dolce
-            else
-                return -0.7; // destra, ma più dolce
-        }
+    //     // 2. Se il fronte è moderato -- usa front_wide per capire la direzione
+    //     if (front_wide_risk_ > 0.20)
+    //     {
+    //         if (left_risk_ < right_risk_)
+    //             return 0.7; // sinistra, ma più dolce
+    //         else
+    //             return -0.7; // destra, ma più dolce
+    //     }
 
-        // 3. Se il fronte è libero -- scegli il lato meno rischioso
-        if (left_risk_ < right_risk_)
-            return 0.5;
-        else if (right_risk_ < left_risk_)
-            return -0.5;
+    //     // 3. Se il fronte è libero -- scegli il lato meno rischioso
+    //     if (left_risk_ < right_risk_)
+    //         return 0.5;
+    //     else if (right_risk_ < left_risk_)
+    //         return -0.5;
 
-        // 4. Se sono uguali -- mantieni la direzione precedente
-        return previous_turn_ >= 0 ? 0.5 : -0.5;
-    }
+    //     // 4. Se sono uguali -- mantieni la direzione precedente
+    //     return previous_turn_ >= 0 ? 0.5 : -0.5;
+    // }
 
     // declaration of the publisher and subscription as private members of the class TurtleController
     rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr publisher_;
@@ -229,27 +258,13 @@ private:
     // dynamic memory for istance FSM and RiskModel
     std::unique_ptr<FSM> fsm_;
     std::unique_ptr<RiskModel> risk_model_;
+    std::unique_ptr<ReactivePlanner> reactive_planner_;
 
     // utilty to generate randomic number
     std::random_device rd;
     std::mt19937 gen;
     std::uniform_real_distribution<double> dist;
 
-    // ROS 2 Parameters
-    double explore_turn_; // variable to store the random turn value
-    double min_duration_explore_;
-    double explore_k_weight_;
-    double escape_k_mult;
-    double previous_turn_;
-    double transition_k_random_;
-
-    // risks
-    double global_risk_;
-    double left_risk_;
-    double right_risk_;
-    double front_risk_;
-    double front_wide_risk_;
-    double back_risk_;
 };
 
 int main(int argc, char *argv[])
